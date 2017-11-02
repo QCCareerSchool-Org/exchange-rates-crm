@@ -22,7 +22,7 @@ else if (typeof process.env.DB_HOST !== 'undefined') // but use a host otherwise
 mysql.createConnection(options)
 .then((connection) => {
 
-    // get a GET request for the currency data
+    // perform a GET request for the currency data
     const url = 'https://api.fixer.io/latest?base=USD';
     https.get(url, (resp) => {
         let data = '';
