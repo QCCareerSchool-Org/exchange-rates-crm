@@ -1,0 +1,20 @@
+{
+  "name": "exchange-rates-crm",
+  "version": "1.0.0",
+  "description": "Updates currency exchange rates on the CRM database",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Dave Welsh <dave@qccareerschool.com",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@types/debug": "0.0.30",
+    "@types/dotenv": "^4.0.2",
+    "@types/mysql": "^2.15.0",
+    "@types/node": "^8.0.47",
+    "debug": "^3.1.0",
+    "dotenv": "^4.0.0",
+    "promise-mysql": "^3.1.1"
+  }
+}
