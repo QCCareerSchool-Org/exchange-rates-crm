@@ -6,6 +6,7 @@ const https = require("https");
 const mysql = require("promise-mysql");
 const debug = Debug('index');
 dotenv.config();
+// set up the database configuration options
 const options = {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
@@ -17,6 +18,7 @@ else if (typeof process.env.DB_HOST !== 'undefined')
     options.host = process.env.DB_HOST;
 mysql.createConnection(options)
     .then((connection) => {
+    // perform a GET request for the currency data
     const url = 'https://api.fixer.io/latest?base=USD';
     https.get(url, (resp) => {
         let data = '';
@@ -27,11 +29,13 @@ mysql.createConnection(options)
             const jsonData = JSON.parse(data);
             if (typeof jsonData.rates === 'undefined')
                 throw new Error('No rates supplied');
-            const sqlSelect = "SELECT code FROM currencies WHERE NOT code = 'USD'";
             try {
+                // find out which currencies need updating
+                const sqlSelect = "SELECT code FROM currencies WHERE NOT code = 'USD'";
                 const currencies = await connection.query(sqlSelect);
                 const sqlUpdate = 'UPDATE currencies SET exchange_rate = ?, modified = NOW() WHERE code = ?';
                 const promises = [];
+                // update the currencies in parallel
                 for (const currency of currencies)
                     if (typeof jsonData.rates[currency.code] === 'number') {
                         const rate = jsonData.rates[currency.code];
@@ -44,7 +48,9 @@ mysql.createConnection(options)
                     }
                     else
                         debug(`${currency.code} not found`);
+                // wait for all of the updates
                 await Promise.all(promises);
+                // close the connection
                 connection.end();
             }
             catch (err) {
