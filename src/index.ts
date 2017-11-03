@@ -7,74 +7,125 @@ const debug = Debug('index');
 
 dotenv.config();
 
-// set up the database configuration options
-const options: mysql.ConnectionConfig = {
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_DATABASE,
-};
+debug('Starting request');
 
-if (typeof process.env.DB_SOCKET_PATH !== 'undefined') // prefer a socketPath
-    options.socketPath = process.env.DB_SOCKET_PATH;
-else if (typeof process.env.DB_HOST !== 'undefined') // but use a host otherwise
-    options.host = process.env.DB_HOST;
+// perform a GET request for the currency data
+const url = 'https://api.fixer.io/latest?base=USD';
+https.get(url, (res) => {
 
-mysql.createConnection(options)
-.then((connection) => {
+    const { statusCode } = res;
+    let contentType = res.headers['content-type'];
 
-    // perform a GET request for the currency data
-    const url = 'https://api.fixer.io/latest?base=USD';
-    https.get(url, (resp) => {
-        let data = '';
+    if (typeof contentType !== 'string')
+        contentType = contentType[0];
 
-        resp.on('data', (chunk) => {
-            data += chunk;
-        });
+    let error;
+    if (statusCode !== 200)
+        error = new Error(`Request Failed.\nStatus Code: ${statusCode}`);
+    else if (!/^application\/json/.test(contentType))
+        error = new Error(`Invalid content-type.\nExpected application/json but received ${contentType}`);
 
-        resp.on('end', async () => {
+    if (error) {
+        debug(error.message);
+        res.resume();  // consume response data to free up memory
+        return;
+    }
 
-            const jsonData = JSON.parse(data);
-
-            if (typeof jsonData.rates === 'undefined')
-                throw new Error('No rates supplied');
-
-            try {
-
-                // find out which currencies need updating
-                const sqlSelect = "SELECT code FROM currencies WHERE NOT code = 'USD'";
-                const currencies = await connection.query(sqlSelect);
-
-                const sqlUpdate = 'UPDATE currencies SET exchange_rate = ?, modified = NOW() WHERE code = ?';
-
-                const promises: Array<Promise<any>> = [];
-
-                // update the currencies in parallel
-                for (const currency of currencies)
-                    if (typeof jsonData.rates[currency.code] === 'number') {
-                        const rate = jsonData.rates[currency.code];
-                        if (typeof process.env.TESTING !== 'undefined')
-                            debug(`Not really updating ${currency.code}`);
-                        else {
-                            promises.push(connection.query(sqlUpdate, [ rate, currency.code ]));
-                            debug(`Updated ${currency.code}: ${rate}`);
-                        }
-                    } else
-                        debug(`${currency.code} not found`);
-
-                // wait for all of the updates
-                await Promise.all(promises);
-
-                // close the connection
-                connection.end();
-
-            } catch (err) {
-                debug(err);
-            }
-
-        });
-
-    }).on('error', (err) => {
-        debug(err);
+    res.setEncoding('utf8');
+    let rawData = '';
+    res.on('data', (chunk) => { rawData += chunk; });
+    res.on('end', () => {
+        debug('Got response');
+        try {
+            const jsonData: IExchangeResult = JSON.parse(rawData);
+            updateDatabase(jsonData);
+        } catch (err) {
+            debug('JSON parse error: ' + err.message);
+        }
     });
 
+}).on('error', (err) => {
+    debug('Request error: ' + err.message);
 });
+
+function updateDatabase(jsonData: IExchangeResult) {
+
+    // see if the data makes sense
+    let error;
+    if (typeof jsonData.rates === 'undefined')
+        error = new Error('No rates supplied');
+    else if (typeof jsonData.date !== 'string')
+        error = new Error('No date supplied');
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(jsonData.date))
+        error = new Error('Unrecognized date format');
+
+    if (error) {
+        debug(error.message);
+        return;
+    }
+
+    // set up the database configuration options
+    const options: mysql.ConnectionConfig = {
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_DATABASE,
+    };
+
+    if (typeof process.env.DB_SOCKET_PATH !== 'undefined') // prefer a socketPath
+        options.socketPath = process.env.DB_SOCKET_PATH;
+    else if (typeof process.env.DB_HOST !== 'undefined') // but use a host otherwise
+        options.host = process.env.DB_HOST;
+
+    let connection: mysql.Connection;
+
+    mysql.createConnection(options)
+        .then((con) => {
+
+            connection = con; // store for later
+
+            // find out which currencies need updating
+            const sqlSelect = "SELECT code FROM currencies WHERE NOT code = 'USD'";
+            return connection.query(sqlSelect);
+
+        }).then((currencies: ICurrency[]) => {
+
+            const sqlUpdate = 'UPDATE currencies SET exchange_rate = ?, modified = NOW() WHERE code = ?';
+
+            const promises: Array<Promise<any>> = [];
+
+            // update the currencies in parallel
+            for (const currency of currencies) {
+                if (typeof jsonData.rates[currency.code] !== 'number') {
+                    debug(`${currency.code} not found`);
+                    continue;
+                }
+                const rate = jsonData.rates[currency.code];
+                debug(`Updating ${currency.code}: ${rate}`);
+                if (typeof process.env.TESTING === 'undefined')
+                    promises.push(connection.query(sqlUpdate, [ rate, currency.code ]));
+            }
+
+            // wait for all of the updates
+            return Promise.all(promises);
+
+        }).catch((err) => {
+
+            debug('Database error: ' + err.message);
+
+        }).then(() => {
+
+            if (connection && connection.end)
+                connection.end();
+
+        });
+}
+
+interface IExchangeResult {
+    base: string;
+    date: string;
+    rates: { [symbol: string]: number; };
+}
+
+interface ICurrency {
+    code: string;
+}
